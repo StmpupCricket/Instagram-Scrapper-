@@ -2,7 +2,7 @@ name: Instagram Video Scraper
 
 on:
   schedule:
-    # Run daily at 2 AM UTC (adjust cron as needed)
+    # Run daily at 2 AM UTC
     - cron: '0 2 * * *'
   workflow_dispatch:  # Allow manual triggers
   push:
@@ -12,7 +12,8 @@ on:
 
 jobs:
   scrape:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04  # Use stable Ubuntu version
+    timeout-minutes: 30
     
     steps:
     - name: Checkout repository
@@ -21,49 +22,238 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.11'
+        python-version: '3.10'  # More stable than 3.11
         
-    - name: Install system dependencies for Playwright
+    - name: Install system dependencies
       run: |
-        sudo apt-get update
-        sudo apt-get install -y libwoff1 libopus0 libwebp6 libwebpdemux2 libenchant-2-2 libgudev-1.0-0 libsecret-1-0 libhyphen0 libgdk-pixbuf2.0-0 libegl1 libgles2 libevent-2.1-7 libnotify4
+        sudo apt-get update -y
+        sudo apt-get install -y \
+          libnss3 \
+          libxss1 \
+          libasound2 \
+          libatk-bridge2.0-0 \
+          libgtk-3-0 \
+          libgbm1 \
+          wget \
+          unzip
         
     - name: Install Python dependencies
       run: |
-        cd scraper
-        pip install -r requirements.txt
+        pip install --upgrade pip
+        pip install playwright==1.40.0
+        pip install beautifulsoup4==4.12.2
+        pip install requests==2.31.0
         
-    - name: Install Playwright browsers
+    - name: Install Playwright
       run: |
-        cd scraper
-        python -m playwright install chromium --with-deps
+        python -m playwright install --with-deps chromium
+        python -m playwright install-deps
+        
+    - name: Create scraper directory structure
+      run: |
+        mkdir -p scraper data
+        
+    - name: Create main.py scraper
+      run: |
+        cat > scraper/main.py << 'EOF'
+import json
+import os
+import time
+import random
+from datetime import datetime
+from playwright.sync_api import sync_playwright
+
+def scrape_instagram_videos(username, max_scrolls=8):
+    """Scrape video links from Instagram profile"""
+    
+    print(f"🎯 Starting scrape for @{username}")
+    
+    videos_data = {
+        "profile": f"@{username}",
+        "scraped_at": datetime.now().isoformat(),
+        "total_videos": 0,
+        "videos": []
+    }
+    
+    # Set random user agent
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    ]
+    
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--disable-web-security',
+                '--disable-features=IsolateOrigins,site-per-process'
+            ]
+        )
+        
+        context = browser.new_context(
+            viewport={'width': 1366, 'height': 768},
+            user_agent=random.choice(user_agents),
+            locale='en-US',
+            timezone_id='America/New_York'
+        )
+        
+        page = context.new_page()
+        
+        try:
+            # Go to Instagram profile
+            profile_url = f"https://www.instagram.com/{username}/"
+            print(f"🌐 Navigating to: {profile_url}")
+            
+            page.goto(profile_url, wait_until='domcontentloaded', timeout=30000)
+            time.sleep(5)
+            
+            # Handle possible login prompts
+            try:
+                not_now_selectors = [
+                    'button:has-text("Not Now")',
+                    'button:has-text("Not now")',
+                    'button:has-text("Cancel")',
+                    'div[role="button"]:has-text("Not Now")'
+                ]
+                
+                for selector in not_now_selectors:
+                    if page.locator(selector).count() > 0:
+                        page.locator(selector).first.click()
+                        time.sleep(2)
+                        print("✅ Closed login prompt")
+                        break
+            except:
+                pass
+            
+            # Collect video URLs
+            video_urls_set = set()
+            scroll_attempts = 0
+            
+            while scroll_attempts < max_scrolls and len(video_urls_set) < 50:
+                # Find video elements
+                video_elements = page.locator('video').all()
+                
+                for video in video_elements:
+                    try:
+                        src = video.get_attribute('src')
+                        if src and 'video' in src and src not in video_urls_set:
+                            video_urls_set.add(src)
+                            print(f"📹 Found video {len(video_urls_set)}")
+                    except:
+                        continue
+                
+                # Scroll down
+                scroll_script = """
+                    window.scrollBy({
+                        top: window.innerHeight * 1.5,
+                        behavior: 'smooth'
+                    });
+                """
+                page.evaluate(scroll_script)
+                
+                # Random delay to appear human
+                delay = random.uniform(2, 4)
+                time.sleep(delay)
+                
+                scroll_attempts += 1
+                print(f"📜 Scroll {scroll_attempts}/{max_scrolls} complete")
+            
+            # Convert to list
+            for url in video_urls_set:
+                videos_data["videos"].append({
+                    "url": url,
+                    "scraped_at": datetime.now().isoformat()
+                })
+            
+            videos_data["total_videos"] = len(videos_data["videos"])
+            
+        except Exception as e:
+            print(f"❌ Error: {str(e)}")
+            # Save partial results
+            if len(video_urls_set) > 0:
+                for url in video_urls_set:
+                    videos_data["videos"].append({
+                        "url": url,
+                        "scraped_at": datetime.now().isoformat()
+                    })
+                videos_data["total_videos"] = len(videos_data["videos"])
+            
+        finally:
+            browser.close()
+    
+    return videos_data
+
+def main():
+    INSTAGRAM_USERNAME = "t20worldcup"
+    
+    print("🚀 Starting Instagram Video Scraper")
+    print("=" * 50)
+    
+    results = scrape_instagram_videos(INSTAGRAM_USERNAME, max_scrolls=8)
+    
+    # Save results
+    os.makedirs("../data", exist_ok=True)
+    
+    # Save JSON
+    json_file = "../data/videos.json"
+    with open(json_file, 'w', encoding='utf-8') as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+    
+    # Save plain text URLs
+    if results["videos"]:
+        txt_file = "../data/video_links.txt"
+        with open(txt_file, 'w', encoding='utf-8') as f:
+            for video in results["videos"]:
+                f.write(f"{video['url']}\n")
+    
+    print("=" * 50)
+    print(f"✅ Scraping complete!")
+    print(f"📊 Total videos found: {results['total_videos']}")
+    print(f"💾 Files saved to data/ directory")
+
+if __name__ == "__main__":
+    main()
+EOF
         
     - name: Run Instagram scraper
       run: |
         cd scraper
         python main.py
-        
-    - name: Check if data was collected
-      id: check-data
+      continue-on-error: true  # Continue even if scraper fails
+      
+    - name: Create README with results
       run: |
-        if [ -f "data/videos.json" ] && [ -s "data/videos.json" ]; then
-          echo "data_found=true" >> $GITHUB_OUTPUT
-        else
-          echo "data_found=false" >> $GITHUB_OUTPUT
+        if [ -f "data/videos.json" ]; then
+          count=$(python -c "import json; data=json.load(open('data/videos.json')); print(data.get('total_videos', 0))")
+          timestamp=$(python -c "import json; data=json.load(open('data/videos.json')); print(data.get('scraped_at', 'N/A'))")
+          
+          cat > data/README.md << EOL
+# Instagram Video Scraper Results
+          
+## Profile: @t20worldcup
+          
+### Statistics
+- **Total Videos Found**: $count
+- **Last Scraped**: $timestamp
+          
+### Files
+1. \`videos.json\` - Complete data in JSON format
+2. \`video_links.txt\` - Plain text URLs only
+          
+### Usage
+To use these links, simply open them in a browser or download using:
+\`\`\`bash
+wget -i video_links.txt
+\`\`\`
+          
+*Note: This data was collected via automated scraping. Respect copyright and terms of service.*
+EOL
         fi
-        
-    - name: Commit and push results
-      if: steps.check-data.outputs.data_found == 'true'
-      run: |
-        git config --global user.name 'GitHub Actions'
-        git config --global user.email 'actions@github.com'
-        
-        # Add and commit the data files
-        git add data/
-        git commit -m "📹 Update scraped Instagram videos [$(date +'%Y-%m-%d %H:%M')]" || echo "No changes to commit"
-        
-        # Push changes
-        git push
         
     - name: Upload data as artifact
       if: always()
@@ -71,21 +261,12 @@ jobs:
       with:
         name: instagram-videos
         path: data/
-        retention-days: 7
+        retention-days: 30
         
-    - name: Create summary report
-      if: always()
-      run: |
-        if [ -f "data/videos.json" ]; then
-          count=$(python -c "import json; data=json.load(open('data/videos.json')); print(data.get('total_videos', 0))")
-          echo "## Scraping Results 📊" >> $GITHUB_STEP_SUMMARY
-          echo "- **Profile**: @t20worldcup" >> $GITHUB_STEP_SUMMARY
-          echo "- **Videos found**: $count" >> $GITHUB_STEP_SUMMARY
-          echo "- **Timestamp**: $(date)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📥 Download Artifacts" >> $GITHUB_STEP_SUMMARY
-          echo "Check the 'Artifacts' section above to download the JSON and TXT files." >> $GITHUB_STEP_SUMMARY
-        else
-          echo "## ❌ Scraping Failed" >> $GITHUB_STEP_SUMMARY
-          echo "No data was collected. Check the logs for errors." >> $GITHUB_STEP_SUMMARY
-        fi
+    - name: Deploy to GitHub Pages (Optional)
+      if: success()
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./data
+        keep_files: true
