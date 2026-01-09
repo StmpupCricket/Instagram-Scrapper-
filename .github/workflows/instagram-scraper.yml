@@ -12,7 +12,7 @@ on:
 
 jobs:
   scrape:
-    runs-on: ubuntu-22.04  # Use stable Ubuntu version
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
     
     steps:
@@ -22,7 +22,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.10'  # More stable than 3.11
+        python-version: '3.10'
         
     - name: Install system dependencies
       run: |
@@ -33,9 +33,7 @@ jobs:
           libasound2 \
           libatk-bridge2.0-0 \
           libgtk-3-0 \
-          libgbm1 \
-          wget \
-          unzip
+          libgbm1
         
     - name: Install Python dependencies
       run: |
@@ -49,11 +47,11 @@ jobs:
         python -m playwright install --with-deps chromium
         python -m playwright install-deps
         
-    - name: Create scraper directory structure
+    - name: Create directory structure
       run: |
-        mkdir -p scraper data
+        mkdir -p scraper
         
-    - name: Create main.py scraper
+    - name: Create main.py script
       run: |
         cat > scraper/main.py << 'EOF'
 import json
@@ -64,10 +62,6 @@ from datetime import datetime
 from playwright.sync_api import sync_playwright
 
 def scrape_instagram_videos(username, max_scrolls=8):
-    """Scrape video links from Instagram profile"""
-    
-    print(f"🎯 Starting scrape for @{username}")
-    
     videos_data = {
         "profile": f"@{username}",
         "scraped_at": datetime.now().isoformat(),
@@ -75,11 +69,9 @@ def scrape_instagram_videos(username, max_scrolls=8):
         "videos": []
     }
     
-    # Set random user agent
     user_agents = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ]
     
     with sync_playwright() as p:
@@ -88,54 +80,28 @@ def scrape_instagram_videos(username, max_scrolls=8):
             args=[
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--disable-web-security',
-                '--disable-features=IsolateOrigins,site-per-process'
+                '--disable-dev-shm-usage'
             ]
         )
         
         context = browser.new_context(
             viewport={'width': 1366, 'height': 768},
-            user_agent=random.choice(user_agents),
-            locale='en-US',
-            timezone_id='America/New_York'
+            user_agent=random.choice(user_agents)
         )
         
         page = context.new_page()
         
         try:
-            # Go to Instagram profile
             profile_url = f"https://www.instagram.com/{username}/"
-            print(f"🌐 Navigating to: {profile_url}")
+            print(f"Navigating to: {profile_url}")
             
             page.goto(profile_url, wait_until='domcontentloaded', timeout=30000)
             time.sleep(5)
             
-            # Handle possible login prompts
-            try:
-                not_now_selectors = [
-                    'button:has-text("Not Now")',
-                    'button:has-text("Not now")',
-                    'button:has-text("Cancel")',
-                    'div[role="button"]:has-text("Not Now")'
-                ]
-                
-                for selector in not_now_selectors:
-                    if page.locator(selector).count() > 0:
-                        page.locator(selector).first.click()
-                        time.sleep(2)
-                        print("✅ Closed login prompt")
-                        break
-            except:
-                pass
-            
-            # Collect video URLs
             video_urls_set = set()
             scroll_attempts = 0
             
-            while scroll_attempts < max_scrolls and len(video_urls_set) < 50:
-                # Find video elements
+            while scroll_attempts < max_scrolls and len(video_urls_set) < 30:
                 video_elements = page.locator('video').all()
                 
                 for video in video_elements:
@@ -143,27 +109,14 @@ def scrape_instagram_videos(username, max_scrolls=8):
                         src = video.get_attribute('src')
                         if src and 'video' in src and src not in video_urls_set:
                             video_urls_set.add(src)
-                            print(f"📹 Found video {len(video_urls_set)}")
+                            print(f"Found video {len(video_urls_set)}")
                     except:
                         continue
                 
-                # Scroll down
-                scroll_script = """
-                    window.scrollBy({
-                        top: window.innerHeight * 1.5,
-                        behavior: 'smooth'
-                    });
-                """
-                page.evaluate(scroll_script)
-                
-                # Random delay to appear human
-                delay = random.uniform(2, 4)
-                time.sleep(delay)
-                
+                page.evaluate("window.scrollBy(0, window.innerHeight * 1.5);")
+                time.sleep(random.uniform(2, 4))
                 scroll_attempts += 1
-                print(f"📜 Scroll {scroll_attempts}/{max_scrolls} complete")
             
-            # Convert to list
             for url in video_urls_set:
                 videos_data["videos"].append({
                     "url": url,
@@ -173,16 +126,7 @@ def scrape_instagram_videos(username, max_scrolls=8):
             videos_data["total_videos"] = len(videos_data["videos"])
             
         except Exception as e:
-            print(f"❌ Error: {str(e)}")
-            # Save partial results
-            if len(video_urls_set) > 0:
-                for url in video_urls_set:
-                    videos_data["videos"].append({
-                        "url": url,
-                        "scraped_at": datetime.now().isoformat()
-                    })
-                videos_data["total_videos"] = len(videos_data["videos"])
-            
+            print(f"Error: {str(e)}")
         finally:
             browser.close()
     
@@ -191,82 +135,60 @@ def scrape_instagram_videos(username, max_scrolls=8):
 def main():
     INSTAGRAM_USERNAME = "t20worldcup"
     
-    print("🚀 Starting Instagram Video Scraper")
-    print("=" * 50)
-    
+    print("Starting Instagram Video Scraper")
     results = scrape_instagram_videos(INSTAGRAM_USERNAME, max_scrolls=8)
     
-    # Save results
-    os.makedirs("../data", exist_ok=True)
+    os.makedirs("data", exist_ok=True)
     
-    # Save JSON
-    json_file = "../data/videos.json"
+    json_file = "data/videos.json"
     with open(json_file, 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
     
-    # Save plain text URLs
     if results["videos"]:
-        txt_file = "../data/video_links.txt"
+        txt_file = "data/video_links.txt"
         with open(txt_file, 'w', encoding='utf-8') as f:
             for video in results["videos"]:
                 f.write(f"{video['url']}\n")
     
-    print("=" * 50)
-    print(f"✅ Scraping complete!")
-    print(f"📊 Total videos found: {results['total_videos']}")
-    print(f"💾 Files saved to data/ directory")
+    print(f"Complete! Found {results['total_videos']} videos")
 
 if __name__ == "__main__":
     main()
 EOF
         
-    - name: Run Instagram scraper
+    - name: Run scraper
       run: |
         cd scraper
         python main.py
-      continue-on-error: true  # Continue even if scraper fails
-      
-    - name: Create README with results
+      continue-on-error: true
+        
+    - name: Create results summary
       run: |
         if [ -f "data/videos.json" ]; then
-          count=$(python -c "import json; data=json.load(open('data/videos.json')); print(data.get('total_videos', 0))")
-          timestamp=$(python -c "import json; data=json.load(open('data/videos.json')); print(data.get('scraped_at', 'N/A'))")
+          echo "## 📊 Scraping Results" >> $GITHUB_STEP_SUMMARY
+          echo "Profile: @t20worldcup" >> $GITHUB_STEP_SUMMARY
           
-          cat > data/README.md << EOL
-# Instagram Video Scraper Results
-          
-## Profile: @t20worldcup
-          
-### Statistics
-- **Total Videos Found**: $count
-- **Last Scraped**: $timestamp
-          
-### Files
-1. \`videos.json\` - Complete data in JSON format
-2. \`video_links.txt\` - Plain text URLs only
-          
-### Usage
-To use these links, simply open them in a browser or download using:
-\`\`\`bash
-wget -i video_links.txt
-\`\`\`
-          
-*Note: This data was collected via automated scraping. Respect copyright and terms of service.*
-EOL
+          count=$(python -c "
+import json
+try:
+    with open('data/videos.json', 'r') as f:
+        data = json.load(f)
+    print(data.get('total_videos', 0))
+except:
+    print('0')
+")
+          echo "Videos found: $count" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Files saved in 'data/' directory" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "## ❌ No data collected" >> $GITHUB_STEP_SUMMARY
+          echo "Check the logs above for errors." >> $GITHUB_STEP_SUMMARY
         fi
         
-    - name: Upload data as artifact
+    - name: Upload artifacts
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: instagram-videos
         path: data/
         retention-days: 30
-        
-    - name: Deploy to GitHub Pages (Optional)
-      if: success()
-      uses: peaceiris/actions-gh-pages@v3
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: ./data
-        keep_files: true
